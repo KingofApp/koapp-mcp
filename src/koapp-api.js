@@ -4,6 +4,7 @@
  */
 
 import axios from 'axios';
+import sha1 from 'sha1';
 
 const BASE_URL = process.env.KOAPP_API_URL || 'https://api.kingofapp.com';
 
@@ -39,9 +40,9 @@ function createClient(token) {
  */
 export async function login(email, password) {
   const client = createClient();
-  const res = await client.post('/login', { email, password });
+  const hashedPassword = sha1(password);
+  const res = await client.post('/login', { email, password: hashedPassword });
 
-  // The API may return the token in different shapes — adapt if needed
   const token = res.data.token || res.data.access_token || res.data.jwt;
   if (!token) throw new Error('Login failed: no token returned');
 

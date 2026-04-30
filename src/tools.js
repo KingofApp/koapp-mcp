@@ -23,8 +23,7 @@ function err(message) {
 }
 async function safe(fn) {
   try { return ok(await fn()); }
-  catch (e) { return err(e.response?.data?.message || e.response?.data || e.message || String(e)); }
-}
+catch (e) { return err(e.response?.data?.message || JSON.stringify(e.response?.data) || e.message || String(e)); }}
 
 // ── Tool registration ─────────────────────────────────────────────────────────
 

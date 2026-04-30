@@ -1,6 +1,6 @@
 {
   "name": "@kingofapp/mcp",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "module",
   "main": "src/index.js",
   "bin": {
@@ -26,6 +26,7 @@
     "axios": "^1.7.0",
     "cors": "^2.8.5",
     "express": "^4.19.0",
+    "sha1": "^1.1.1",
     "zod": "^3.23.0"
   }
 }
