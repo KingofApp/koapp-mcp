@@ -1,0 +1,31 @@
+{
+  "name": "@kingofapp/mcp",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": {
+    "koapp-mcp": "src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kingofapp/koapp-mcp.git"
+  },
+  "keywords": [
+    "mcp",
+    "kingofapp",
+    "claude",
+    "model-context-protocol"
+  ],
+  "author": "King of App",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "axios": "^1.7.0",
+    "cors": "^2.8.5",
+    "express": "^4.19.0",
+    "zod": "^3.23.0"
+  }
+}
