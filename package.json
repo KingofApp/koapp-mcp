@@ -1,11 +1,17 @@
 {
   "name": "@kingofapp/mcp",
-  "version": "1.0.1",
+  "version": "1.1.1",
   "type": "module",
   "main": "src/index.js",
   "bin": {
     "koapp-mcp": "src/index.js"
   },
+  "files": [
+    "src/",
+    "docs/",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "start": "NODE_ENV=production node src/server.js"
   },
