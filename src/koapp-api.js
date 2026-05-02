@@ -12,7 +12,7 @@ const BASE_URL = process.env.KOAPP_API_URL || 'https://api.kingofapp.com';
  * Generate a random 5-char alphanumeric code for uniqueIds
  * Matches the pattern used by the Builder: e.g. "wpembed-t9sRf"
  */
-function generateUid() {
+export function generateUid() {
   const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   return Array.from({ length: 5 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
 }
@@ -25,7 +25,7 @@ function createClient(token) {
     baseURL: BASE_URL,
     headers: {
       'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {})
+      ...(token ? { 'x-access-token': token } : {})
     },
     timeout: 30000
   });
@@ -57,12 +57,18 @@ export async function login(email, password) {
 // ─────────────────────────────────────────────
 
 /**
- * Get all apps for the authenticated user
+ * Get apps for the authenticated user.
+ * page: 1-based page number (20 per page)
+ * Returns { apps, totalItems }
  */
-export async function getApps(token) {
+export async function getApps(token, { page = 1 } = {}) {
   const client = createClient(token);
-  const res = await client.get('/apps');
-  return res.data;
+  const qs = page > 1 ? `?page=${page}` : '';
+  const res = await client.get(`/apps${qs}`);
+  return {
+    apps: res.data?.result || res.data || [],
+    totalItems: res.data?.totalItems || null
+  };
 }
 
 /**
@@ -71,7 +77,7 @@ export async function getApps(token) {
 export async function getApp(token, appId) {
   const client = createClient(token);
   const res = await client.get(`/apps/${appId}`);
-  return res.data;
+  return Array.isArray(res.data) ? res.data[0] : (res.data?.result?.[0] || res.data);
 }
 
 /**
@@ -97,7 +103,9 @@ export async function createApp(token, templateId, name) {
  */
 export async function patchApp(token, appId, appData) {
   const client = createClient(token);
-  const res = await client.patch(`/apps/${appId}`, appData);
+  // eslint-disable-next-line no-unused-vars
+  const { _id, ...body } = appData;
+  const res = await client.patch(`/apps/${appId}`, body);
   return res.data;
 }
 
@@ -106,9 +114,8 @@ export async function patchApp(token, appId, appData) {
  */
 export async function getTemplates(token) {
   const client = createClient(token);
-  const res = await client.get('/apps?fields=_id,name,type,config.images');
-  // Filter only templates
-  return (res.data || []).filter(a => a.type === 'template');
+  const res = await client.get('/apps?fields=_id,name,type,config.images&type=template');
+  return res.data?.result || res.data || [];
 }
 
 // ─────────────────────────────────────────────
@@ -116,12 +123,22 @@ export async function getTemplates(token) {
 // ─────────────────────────────────────────────
 
 /**
- * Get all available modules from the market
+ * Get all available modules from the market (paginates through all pages)
  */
 export async function getModules(token) {
   const client = createClient(token);
-  const res = await client.get('/modules');
-  return res.data;
+  const first = await client.get('/modules');
+  const total = first.data?.totalItems || 0;
+  const page1 = first.data?.result || first.data || [];
+  if (!total || page1.length >= total) return page1;
+
+  const pages = Math.ceil(total / page1.length);
+  const rest = [];
+  for (let p = 2; p <= pages; p++) {
+    const r = await client.get(`/modules?page=${p}`);
+    rest.push(...(r.data?.result || []));
+  }
+  return [...page1, ...rest];
 }
 
 /**
@@ -139,7 +156,7 @@ export async function getModule(token, moduleId) {
 export async function getServices(token) {
   const client = createClient(token);
   const res = await client.get('/services');
-  return res.data;
+  return res.data?.result || res.data || [];
 }
 
 // ─────────────────────────────────────────────

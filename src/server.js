@@ -1,32 +1,36 @@
 /**
- * King of App MCP Server — HTTP + SSE Transport
- *
- * Una sola instancia pública en AWS sirve a todas las agencias.
- * Cada conexión SSE obtiene su propio contexto MCP independiente.
+ * King of App MCP Server — Streamable HTTP Transport (MCP spec 2025-03-26)
  *
  * Endpoints:
- *   GET  /         → info y guía de conexión
- *   GET  /sse      → abre el stream SSE (la IA se conecta aquí)
- *   POST /messages → la IA envía llamadas a herramientas
- *   GET  /health   → healthcheck para AWS ALB
+ *   POST /mcp      → Streamable HTTP (claude.ai, modern clients)
+ *   GET  /mcp      → SSE stream for existing sessions
+ *   DELETE /mcp    → terminate session
+ *   GET  /sse      → legacy SSE (Claude Desktop older configs)
+ *   POST /messages → legacy SSE messages
+ *   GET  /health   → healthcheck
  */
 
 import express from 'express';
 import cors from 'cors';
+import { randomUUID } from 'crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { registerTools } from './tools.js';
 
 const PORT       = process.env.PORT       || 3000;
 const MCP_SECRET = process.env.MCP_SECRET || null;
 
 const app = express();
-app.use(cors({ origin: '*', methods: ['GET','POST','OPTIONS'], allowedHeaders: ['Content-Type','Authorization','x-mcp-secret'] }));
-app.use(express.json({ limit: '10mb' }));
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-mcp-secret', 'mcp-session-id'],
+  exposedHeaders: ['mcp-session-id']
+}));
 
-// ── Auth ──────────────────────────────────────────────────────────────────────
-// Las agencias añaden la cabecera:  x-mcp-secret: <MCP_SECRET>
-// En desarrollo (sin MCP_SECRET) se omite la verificación.
+app.use(express.json({ limit: '50mb' }));
 
 function checkSecret(req, res, next) {
   if (!MCP_SECRET) return next();
@@ -35,100 +39,144 @@ function checkSecret(req, res, next) {
   next();
 }
 
-// ── Sesiones activas ──────────────────────────────────────────────────────────
-// sessionId → SSEServerTransport
-// Cada agencia conectada tiene su propia entrada en este Map.
+function createMcpServer() {
+  const server = new McpServer({ name: 'koapp-mcp', version: '1.0.1' });
+  registerTools(server);
+  return server;
+}
 
-const sessions = new Map();
+// ── Streamable HTTP sessions (claude.ai / modern clients) ─────────────────────
+const streamableSessions = new Map(); // sessionId → StreamableHTTPServerTransport
 
-// ── GET /health ───────────────────────────────────────────────────────────────
+app.post('/mcp', checkSecret, async (req, res) => {
+  const sessionId = req.headers['mcp-session-id'];
+
+  const body = req.body;
+
+  if (body?.method === 'tools/call' && body?.params?.name) {
+    const args = body?.params?.arguments || {};
+    const name = body.params.name;
+    if (name === 'koapp_list_templates' || name === 'koapp_login') {
+      console.log(`[raw-call] tool=${name} token_len=${args.token?.length ?? 'MISSING'} token_start=${args.token?.substring(0, 15) ?? 'N/A'}`);
+    }
+  }
+
+  try {
+    if (sessionId && streamableSessions.has(sessionId)) {
+      const transport = streamableSessions.get(sessionId);
+      await transport.handleRequest(req, res, body);
+      return;
+    }
+
+    if (!sessionId && isInitializeRequest(body)) {
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => randomUUID(),
+      });
+
+      const mcpServer = createMcpServer();
+      await mcpServer.connect(transport);
+
+      transport.onclose = () => {
+        const sid = transport.sessionId;
+        if (sid) streamableSessions.delete(sid);
+        console.log(`[${new Date().toISOString()}] 🔌 Streamable closed: ${sid} | active: ${streamableSessions.size}`);
+      };
+
+      await transport.handleRequest(req, res, body);
+
+      if (transport.sessionId) {
+        streamableSessions.set(transport.sessionId, transport);
+        console.log(`[${new Date().toISOString()}] ✅ Streamable session: ${transport.sessionId} | active: ${streamableSessions.size}`);
+      }
+      return;
+    }
+
+    res.status(400).json({ error: 'Missing mcp-session-id or not an initialize request' });
+  } catch (e) {
+    console.error('[POST /mcp] error:', e.message, e.stack);
+    if (!res.headersSent) res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/mcp', checkSecret, async (req, res) => {
+  const sessionId = req.headers['mcp-session-id'];
+  if (!sessionId || !streamableSessions.has(sessionId))
+    return res.status(404).json({ error: 'Session not found' });
+  const transport = streamableSessions.get(sessionId);
+  await transport.handleRequest(req, res);
+});
+
+app.delete('/mcp', checkSecret, async (req, res) => {
+  const sessionId = req.headers['mcp-session-id'];
+  if (!sessionId || !streamableSessions.has(sessionId))
+    return res.status(404).json({ error: 'Session not found' });
+  const transport = streamableSessions.get(sessionId);
+  await transport.close();
+  streamableSessions.delete(sessionId);
+  res.status(200).json({ message: 'Session terminated' });
+});
+
+// ── Legacy SSE (Claude Desktop / older clients) ───────────────────────────────
+const sseSessions = new Map(); // sessionId → SSEServerTransport
+
+app.get('/sse', checkSecret, async (req, res) => {
+  const transport = new SSEServerTransport('/messages', res);
+  sseSessions.set(transport.sessionId, transport);
+
+  console.log(`[${new Date().toISOString()}] ✅ SSE session: ${transport.sessionId} | active: ${sseSessions.size}`);
+
+  req.on('close', () => {
+    sseSessions.delete(transport.sessionId);
+    console.log(`[${new Date().toISOString()}] 🔌 SSE closed: ${transport.sessionId} | active: ${sseSessions.size}`);
+  });
+
+  const mcpServer = createMcpServer();
+  await mcpServer.connect(transport);
+});
+
+app.post('/messages', checkSecret, async (req, res) => {
+  const { sessionId } = req.query;
+  if (!sessionId) return res.status(400).json({ error: 'Missing ?sessionId' });
+  const transport = sseSessions.get(sessionId);
+  if (!transport) return res.status(404).json({ error: `Session "${sessionId}" not found` });
+  await transport.handlePostMessage(req, res, req.body);
+});
+
+// ── Health & info ─────────────────────────────────────────────────────────────
 
 app.get('/health', (_req, res) => res.json({
-  status: 'ok', service: 'koapp-mcp', version: '1.0.0',
-  apiUrl: process.env.KOAPP_API_URL || 'NOT SET',
-  activeSessions: sessions.size,
+  status: 'ok', service: 'koapp-mcp', version: '1.0.1',
+  activeSessions: streamableSessions.size + sseSessions.size,
   timestamp: new Date().toISOString()
 }));
-
-// ── GET / — guía de conexión ──────────────────────────────────────────────────
 
 app.get('/', (req, res) => {
   const base = `${req.protocol}://${req.get('host')}`;
   res.json({
     name: 'King of App MCP Server',
-    version: '1.0.0',
-    connect: {
-      claude_desktop: {
-        config: {
-          mcpServers: {
-            koapp: {
-              url: `${base}/sse`,
-              headers: MCP_SECRET ? { 'x-mcp-secret': '<your-secret>' } : {}
-            }
-          }
-        }
-      },
-      openai_gpt: {
-        url: `${base}/sse`,
-        type: 'sse',
-        headers: MCP_SECRET ? { 'x-mcp-secret': '<your-secret>' } : {}
-      },
-      generic: `Connect any MCP client to ${base}/sse`
+    version: '1.0.1',
+    endpoints: {
+      streamable_http: `${base}/mcp`,
+      legacy_sse: `${base}/sse`
     },
     tools: 15,
-    auth: MCP_SECRET ? 'Required — header: x-mcp-secret' : 'Open (dev mode — set MCP_SECRET in production)'
+    auth: MCP_SECRET ? 'Required — header: x-mcp-secret' : 'Open (dev mode)'
   });
 });
 
-// ── GET /sse — abre la conexión SSE ──────────────────────────────────────────
-// La IA llama a este endpoint primero. Se crea una instancia MCP por conexión.
-
-app.get('/sse', checkSecret, async (req, res) => {
-  const mcpServer = new McpServer({
-    name: 'koapp-mcp',
-    version: '1.0.0',
-    description: 'King of App MCP Server — create mobile apps automatically with AI'
-  });
-
-  registerTools(mcpServer);
-
-  const transport = new SSEServerTransport('/messages', res);
-  sessions.set(transport.sessionId, transport);
-
-  console.log(`[${new Date().toISOString()}] ✅ New session: ${transport.sessionId} | active: ${sessions.size}`);
-
-  req.on('close', () => {
-    sessions.delete(transport.sessionId);
-    console.log(`[${new Date().toISOString()}] 🔌 Session closed: ${transport.sessionId} | active: ${sessions.size}`);
-  });
-
-  await mcpServer.connect(transport);
+app.use((err, req, res, next) => {
+  console.error('[Express error]', err.status, err.type, err.message);
+  if (err.status === 400) return res.status(400).json({ error: err.message || 'Bad Request' });
+  next(err);
 });
-
-// ── POST /messages — recibe llamadas a herramientas ──────────────────────────
-// La IA envía aquí sus tool calls con ?sessionId=<id> en la query.
-
-app.post('/messages', checkSecret, async (req, res) => {
-  const { sessionId } = req.query;
-
-  if (!sessionId)
-    return res.status(400).json({ error: 'Missing ?sessionId query parameter' });
-
-  const transport = sessions.get(sessionId);
-  if (!transport)
-    return res.status(404).json({ error: `Session "${sessionId}" not found or expired. Open /sse first.` });
-
-  await transport.handlePostMessage(req, res, req.body);
-});
-
-// ── Start ─────────────────────────────────────────────────────────────────────
 
 app.listen(PORT, () => {
   console.log('');
   console.log('🚀 King of App MCP Server');
   console.log(`   Port:      ${PORT}`);
-  console.log(`   SSE:       http://localhost:${PORT}/sse`);
-  console.log(`   Health:    http://localhost:${PORT}/health`);
+  console.log(`   Streamable HTTP: http://localhost:${PORT}/mcp`);
+  console.log(`   Legacy SSE:      http://localhost:${PORT}/sse`);
+  console.log(`   Health:          http://localhost:${PORT}/health`);
   console.log(`   API URL:   ${process.env.KOAPP_API_URL || '⚠️  KOAPP_API_URL not set'}`);
   console.log(`   Auth:      ${MCP_SECRET ? '🔒 MCP_SECRET active' : '⚠️  No MCP_SECRET (dev mode)'}`);
   console.log('');

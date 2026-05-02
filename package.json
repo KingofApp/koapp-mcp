@@ -7,7 +7,7 @@
     "koapp-mcp": "src/index.js"
   },
   "scripts": {
-    "start": "node src/index.js"
+    "start": "NODE_ENV=production node src/server.js"
   },
   "repository": {
     "type": "git",
