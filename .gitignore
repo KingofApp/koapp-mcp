@@ -1,4 +1,15 @@
 node_modules/
 .env
+.env.local
 *.log
 .DS_Store
+*.pem
+.claude/
+
+# Dev/test scripts
+test-*.js
+build-*.js
+*.nginx
+mcp-test.json
+tools-schema.txt
+dist/
