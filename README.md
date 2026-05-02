@@ -135,25 +135,33 @@ All custom screens use the `superhtml` module (`identifier: superhtml`, id `5cb4
 
 ## Connect to Claude
 
-### claude.ai
-
-1. Settings → Integrations → Add MCP server
-2. URL: `https://mcp.kingofapp.com/mcp`
-3. If `MCP_SECRET` is set: add header `x-mcp-secret: <value>`
-
 ### Claude Desktop
+
+Download: **https://claude.ai/download** (Windows & macOS)
+
+Edit `claude_desktop_config.json`:
+- Windows: `%APPDATA%\Claude\claude_desktop_config.json`
+- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
 
 ```json
 {
   "mcpServers": {
     "koapp": {
-      "url": "https://mcp.kingofapp.com/sse"
+      "url": "https://mcp.kingofapp.com/mcp"
     }
   }
 }
 ```
 
-### Via npx (local stdio)
+Restart Claude Desktop. Done.
+
+### claude.ai (web, no install needed)
+
+1. Settings → Integrations → Add MCP server
+2. URL: `https://mcp.kingofapp.com/mcp`
+3. Save.
+
+### Via npx (self-hosted)
 
 ```json
 {
